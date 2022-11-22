@@ -1,73 +1,97 @@
-import os.path
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import get_context
+import os
+import re
+
+import torch
+from PIL import Image
+import numpy as np
+
+from modules import modelloader, paths, deepbooru_model, devices, images, shared
+
+re_special = re.compile(r'([\\()])')
 
 
-def _load_tf_and_return_tags(pil_image, threshold):
-    import deepdanbooru as dd
-    import tensorflow as tf
-    import numpy as np
+class DeepDanbooru:
+    def __init__(self):
+        self.model = None
 
-    this_folder = os.path.dirname(__file__)
-    model_path = os.path.abspath(os.path.join(this_folder, '..', 'models', 'deepbooru'))
-    if not os.path.exists(os.path.join(model_path, 'project.json')):
-        # there is no point importing these every time
-        import zipfile
-        from basicsr.utils.download_util import load_file_from_url
-        load_file_from_url(r"https://github.com/KichangKim/DeepDanbooru/releases/download/v3-20211112-sgd-e28/deepdanbooru-v3-20211112-sgd-e28.zip",
-                           model_path)
-        with zipfile.ZipFile(os.path.join(model_path, "deepdanbooru-v3-20211112-sgd-e28.zip"), "r") as zip_ref:
-            zip_ref.extractall(model_path)
-        os.remove(os.path.join(model_path, "deepdanbooru-v3-20211112-sgd-e28.zip"))
+    def load(self):
+        if self.model is not None:
+            return
 
-    tags = dd.project.load_tags_from_project(model_path)
-    model = dd.project.load_model_from_project(
-        model_path, compile_model=True
-    )
+        files = modelloader.load_models(
+            model_path=os.path.join(paths.models_path, "torch_deepdanbooru"),
+            model_url='https://github.com/AUTOMATIC1111/TorchDeepDanbooru/releases/download/v1/model-resnet_custom_v3.pt',
+            ext_filter=".pt",
+            download_name='model-resnet_custom_v3.pt',
+        )
 
-    width = model.input_shape[2]
-    height = model.input_shape[1]
-    image = np.array(pil_image)
-    image = tf.image.resize(
-        image,
-        size=(height, width),
-        method=tf.image.ResizeMethod.AREA,
-        preserve_aspect_ratio=True,
-    )
-    image = image.numpy()  # EagerTensor to np.array
-    image = dd.image.transform_and_pad_image(image, width, height)
-    image = image / 255.0
-    image_shape = image.shape
-    image = image.reshape((1, image_shape[0], image_shape[1], image_shape[2]))
+        self.model = deepbooru_model.DeepDanbooruModel()
+        self.model.load_state_dict(torch.load(files[0], map_location="cpu"))
 
-    y = model.predict(image)[0]
+        self.model.eval()
+        self.model.to(devices.cpu, devices.dtype)
 
-    result_dict = {}
+    def start(self):
+        self.load()
+        self.model.to(devices.device)
 
-    for i, tag in enumerate(tags):
-        result_dict[tag] = y[i]
-    result_tags_out = []
-    result_tags_print = []
-    for tag in tags:
-        if result_dict[tag] >= threshold:
+    def stop(self):
+        if not shared.opts.interrogate_keep_models_in_memory:
+            self.model.to(devices.cpu)
+            devices.torch_gc()
+
+    def tag(self, pil_image):
+        self.start()
+        res = self.tag_multi(pil_image)
+        self.stop()
+
+        return res
+
+    def tag_multi(self, pil_image, force_disable_ranks=False):
+        threshold = shared.opts.interrogate_deepbooru_score_threshold
+        use_spaces = shared.opts.deepbooru_use_spaces
+        use_escape = shared.opts.deepbooru_escape
+        alpha_sort = shared.opts.deepbooru_sort_alpha
+        include_ranks = shared.opts.interrogate_return_ranks and not force_disable_ranks
+
+        pic = images.resize_image(2, pil_image.convert("RGB"), 512, 512)
+        a = np.expand_dims(np.array(pic, dtype=np.float32), 0) / 255
+
+        with torch.no_grad(), devices.autocast():
+            x = torch.from_numpy(a).cuda()
+            y = self.model(x)[0].detach().cpu().numpy()
+
+        probability_dict = {}
+
+        for tag, probability in zip(self.model.tags, y):
+            if probability < threshold:
+                continue
+
             if tag.startswith("rating:"):
                 continue
-            result_tags_out.append(tag)
-            result_tags_print.append(f'{result_dict[tag]} {tag}')
 
-    print('\n'.join(sorted(result_tags_print, reverse=True)))
+            probability_dict[tag] = probability
 
-    return ', '.join(result_tags_out).replace('_', ' ').replace(':', ' ')
+        if alpha_sort:
+            tags = sorted(probability_dict)
+        else:
+            tags = [tag for tag, _ in sorted(probability_dict.items(), key=lambda x: -x[1])]
+
+        res = []
+
+        for tag in tags:
+            probability = probability_dict[tag]
+            tag_outformat = tag
+            if use_spaces:
+                tag_outformat = tag_outformat.replace('_', ' ')
+            if use_escape:
+                tag_outformat = re.sub(re_special, r'\\\1', tag_outformat)
+            if include_ranks:
+                tag_outformat = f"({tag_outformat}:{probability:.3f})"
+
+            res.append(tag_outformat)
+
+        return ", ".join(res)
 
 
-def subprocess_init_no_cuda():
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
-
-def get_deepbooru_tags(pil_image, threshold=0.5):
-    context = get_context('spawn')
-    with ProcessPoolExecutor(initializer=subprocess_init_no_cuda, mp_context=context) as executor:
-        f = executor.submit(_load_tf_and_return_tags, pil_image, threshold, )
-        ret = f.result()  # will rethrow any exceptions
-    return ret
+model = DeepDanbooru()
