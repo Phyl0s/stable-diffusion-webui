@@ -1,6 +1,4 @@
 import copy
-import math
-import os
 import random
 import sys
 import traceback
@@ -9,9 +7,9 @@ import shlex
 import modules.scripts as scripts
 import gradio as gr
 
+from modules import sd_samplers
 from modules.processing import Processed, process_images
-from PIL import Image
-from modules.shared import opts, cmd_opts, state
+from modules.shared import state
 
 
 def process_string_tag(tag):
@@ -44,6 +42,7 @@ prompt_tags = {
     "seed_resize_from_h": process_int_tag,
     "seed_resize_from_w": process_int_tag,
     "sampler_index": process_int_tag,
+    "sampler_name": process_string_tag,
     "batch_size": process_int_tag,
     "n_iter": process_int_tag,
     "steps": process_int_tag,
@@ -66,14 +65,28 @@ def cmdargs(line):
         arg = args[pos]
 
         assert arg.startswith("--"), f'must start with "--": {arg}'
+        assert pos+1 < len(args), f'missing argument for command line option {arg}'
+
         tag = arg[2:]
+
+        if tag == "prompt" or tag == "negative_prompt":
+            pos += 1
+            prompt = args[pos]
+            pos += 1
+            while pos < len(args) and not args[pos].startswith("--"):
+                prompt += " "
+                prompt += args[pos]
+                pos += 1
+            res[tag] = prompt
+            continue
+
 
         func = prompt_tags.get(tag, None)
         assert func, f'unknown commandline option: {arg}'
 
-        assert pos+1 < len(args), f'missing argument for command line option {arg}'
-
         val = args[pos+1]
+        if tag == "sampler_name":
+            val = sd_samplers.samplers_map.get(val.lower(), None)
 
         res[tag] = func(val)
 
@@ -84,11 +97,10 @@ def cmdargs(line):
 
 def load_prompt_file(file):
     if file is None:
-        lines = []
+        return None, gr.update(), gr.update(lines=7)
     else:
         lines = [x.strip() for x in file.decode('utf8', errors='ignore').split("\n")]
-
-    return None, "\n".join(lines), gr.update(lines=7)
+        return None, "\n".join(lines), gr.update(lines=7)
 
 
 class Script(scripts.Script):
@@ -96,18 +108,18 @@ class Script(scripts.Script):
         return "Prompts from file or textbox"
 
     def ui(self, is_img2img):
-        checkbox_iterate = gr.Checkbox(label="Iterate seed every line", value=False)
-        checkbox_iterate_batch = gr.Checkbox(label="Use same random seed for all lines", value=False)
+        checkbox_iterate = gr.Checkbox(label="Iterate seed every line", value=False, elem_id=self.elem_id("checkbox_iterate"))
+        checkbox_iterate_batch = gr.Checkbox(label="Use same random seed for all lines", value=False, elem_id=self.elem_id("checkbox_iterate_batch"))
 
-        prompt_txt = gr.Textbox(label="List of prompt inputs", lines=1)
-        file = gr.File(label="Upload prompt inputs", type='bytes')
+        prompt_txt = gr.Textbox(label="List of prompt inputs", lines=1, elem_id=self.elem_id("prompt_txt"))
+        file = gr.File(label="Upload prompt inputs", type='binary', elem_id=self.elem_id("file"))
 
-        file.change(fn=load_prompt_file, inputs=[file], outputs=[file, prompt_txt, prompt_txt])
+        file.change(fn=load_prompt_file, inputs=[file], outputs=[file, prompt_txt, prompt_txt], show_progress=False)
 
         # We start at one line. When the text changes, we jump to seven lines, or two lines if no \n.
         # We don't shrink back to 1, because that causes the control to ignore [enter], and it may
         # be unclear to the user that shift-enter is needed.
-        prompt_txt.change(lambda tb: gr.update(lines=7) if ("\n" in tb) else gr.update(lines=2), inputs=[prompt_txt], outputs=[prompt_txt])
+        prompt_txt.change(lambda tb: gr.update(lines=7) if ("\n" in tb) else gr.update(lines=2), inputs=[prompt_txt], outputs=[prompt_txt], show_progress=False)
         return [checkbox_iterate, checkbox_iterate_batch, prompt_txt]
 
     def run(self, p, checkbox_iterate, checkbox_iterate_batch, prompt_txt: str):
@@ -124,17 +136,13 @@ class Script(scripts.Script):
                 try:
                     args = cmdargs(line)
                 except Exception:
-                    print(f"Error parsing line [line] as commandline:", file=sys.stderr)
+                    print(f"Error parsing line {line} as commandline:", file=sys.stderr)
                     print(traceback.format_exc(), file=sys.stderr)
                     args = {"prompt": line}
             else:
                 args = {"prompt": line}
 
-            n_iter = args.get("n_iter", 1)
-            if n_iter != 1:
-                job_count += n_iter
-            else:
-                job_count += 1
+            job_count += args.get("n_iter", p.n_iter)
 
             jobs.append(args)
 
@@ -147,7 +155,7 @@ class Script(scripts.Script):
         images = []
         all_prompts = []
         infotexts = []
-        for n, args in enumerate(jobs):
+        for args in jobs:
             state.job = f"{state.job_no + 1} out of {state.job_count}"
 
             copy_p = copy.copy(p)
@@ -156,7 +164,7 @@ class Script(scripts.Script):
 
             proc = process_images(copy_p)
             images += proc.images
-            
+
             if checkbox_iterate:
                 p.seed = p.seed + (p.batch_size * p.n_iter)
             all_prompts += proc.all_prompts

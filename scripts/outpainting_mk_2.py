@@ -7,9 +7,9 @@ import modules.scripts as scripts
 import gradio as gr
 from PIL import Image, ImageDraw
 
-from modules import images, processing, devices
+from modules import images
 from modules.processing import Processed, process_images
-from modules.shared import opts, cmd_opts, state
+from modules.shared import opts, state
 
 
 # this function is taken from https://github.com/parlance-zz/g-diffuser-bot
@@ -72,7 +72,7 @@ def get_matched_noise(_np_src_image, np_mask_rgb, noise_q=1, color_variation=0.0
     height = _np_src_image.shape[1]
     num_channels = _np_src_image.shape[2]
 
-    np_src_image = _np_src_image[:] * (1. - np_mask_rgb)
+    _np_src_image[:] * (1. - np_mask_rgb)
     np_mask_grey = (np.sum(np_mask_rgb, axis=2) / 3.)
     img_mask = np_mask_grey > 1e-6
     ref_mask = np_mask_grey < 1e-3
@@ -131,11 +131,11 @@ class Script(scripts.Script):
 
         info = gr.HTML("<p style=\"margin-bottom:0.75em\">Recommended settings: Sampling Steps: 80-100, Sampler: Euler a, Denoising strength: 0.8</p>")
 
-        pixels = gr.Slider(label="Pixels to expand", minimum=8, maximum=256, step=8, value=128)
-        mask_blur = gr.Slider(label='Mask blur', minimum=0, maximum=64, step=1, value=8)
-        direction = gr.CheckboxGroup(label="Outpainting direction", choices=['left', 'right', 'up', 'down'], value=['left', 'right', 'up', 'down'])
-        noise_q = gr.Slider(label="Fall-off exponent (lower=higher detail)", minimum=0.0, maximum=4.0, step=0.01, value=1.0)
-        color_variation = gr.Slider(label="Color variation", minimum=0.0, maximum=1.0, step=0.01, value=0.05)
+        pixels = gr.Slider(label="Pixels to expand", minimum=8, maximum=256, step=8, value=128, elem_id=self.elem_id("pixels"))
+        mask_blur = gr.Slider(label='Mask blur', minimum=0, maximum=64, step=1, value=8, elem_id=self.elem_id("mask_blur"))
+        direction = gr.CheckboxGroup(label="Outpainting direction", choices=['left', 'right', 'up', 'down'], value=['left', 'right', 'up', 'down'], elem_id=self.elem_id("direction"))
+        noise_q = gr.Slider(label="Fall-off exponent (lower=higher detail)", minimum=0.0, maximum=4.0, step=0.01, value=1.0, elem_id=self.elem_id("noise_q"))
+        color_variation = gr.Slider(label="Color variation", minimum=0.0, maximum=1.0, step=0.01, value=0.05, elem_id=self.elem_id("color_variation"))
 
         return [info, pixels, mask_blur, direction, noise_q, color_variation]
 
@@ -275,7 +275,7 @@ class Script(scripts.Script):
 
         if opts.samples_save:
             for img in all_processed_images:
-                images.save_image(img, p.outpath_samples, "", res.seed, p.prompt, opts.grid_format, info=res.info, p=p)
+                images.save_image(img, p.outpath_samples, "", res.seed, p.prompt, opts.samples_format, info=res.info, p=p)
 
         if opts.grid_save and not unwanted_grid_because_of_img_count:
             images.save_image(combined_grid_image, p.outpath_grids, "grid", res.seed, p.prompt, opts.grid_format, info=res.info, short_filename=not opts.grid_extended_filename, grid=True, p=p)

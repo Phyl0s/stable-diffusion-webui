@@ -2,10 +2,8 @@ import base64
 import json
 import numpy as np
 import zlib
-from PIL import Image, PngImagePlugin, ImageDraw, ImageFont
-from fonts.ttf import Roboto
+from PIL import Image, ImageDraw, ImageFont
 import torch
-from modules.shared import opts
 
 
 class EmbeddingEncoder(json.JSONEncoder):
@@ -17,7 +15,7 @@ class EmbeddingEncoder(json.JSONEncoder):
 
 class EmbeddingDecoder(json.JSONDecoder):
     def __init__(self, *args, **kwargs):
-        json.JSONDecoder.__init__(self, object_hook=self.object_hook, *args, **kwargs)
+        json.JSONDecoder.__init__(self, *args, object_hook=self.object_hook, **kwargs)
 
     def object_hook(self, d):
         if 'TORCHTENSOR' in d:
@@ -76,10 +74,10 @@ def insert_image_data_embed(image, data):
     next_size = data_np_low.shape[0] + (h-(data_np_low.shape[0] % h))
     next_size = next_size + ((h*d)-(next_size % (h*d)))
 
-    data_np_low.resize(next_size)
+    data_np_low = np.resize(data_np_low, next_size)
     data_np_low = data_np_low.reshape((h, -1, d))
 
-    data_np_high.resize(next_size)
+    data_np_high = np.resize(data_np_high, next_size)
     data_np_high = data_np_high.reshape((h, -1, d))
 
     edge_style = list(data['string_to_param'].values())[0].cpu().detach().numpy().tolist()[0][:1024]
@@ -136,11 +134,8 @@ def caption_image_overlay(srcimage, title, footerLeft, footerMid, footerRight, t
     image = srcimage.copy()
     fontsize = 32
     if textfont is None:
-        try:
-            textfont = ImageFont.truetype(opts.font or Roboto, fontsize)
-            textfont = opts.font or Roboto
-        except Exception:
-            textfont = Roboto
+        from modules.images import get_font
+        textfont = get_font(fontsize)
 
     factor = 1.5
     gradient = Image.new('RGBA', (1, image.size[1]), color=(0, 0, 0, 0))

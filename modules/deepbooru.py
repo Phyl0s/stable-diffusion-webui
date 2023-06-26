@@ -2,7 +2,6 @@ import os
 import re
 
 import torch
-from PIL import Image
 import numpy as np
 
 from modules import modelloader, paths, deepbooru_model, devices, images, shared
@@ -21,7 +20,7 @@ class DeepDanbooru:
         files = modelloader.load_models(
             model_path=os.path.join(paths.models_path, "torch_deepdanbooru"),
             model_url='https://github.com/AUTOMATIC1111/TorchDeepDanbooru/releases/download/v1/model-resnet_custom_v3.pt',
-            ext_filter=".pt",
+            ext_filter=[".pt"],
             download_name='model-resnet_custom_v3.pt',
         )
 
@@ -58,7 +57,7 @@ class DeepDanbooru:
         a = np.expand_dims(np.array(pic, dtype=np.float32), 0) / 255
 
         with torch.no_grad(), devices.autocast():
-            x = torch.from_numpy(a).cuda()
+            x = torch.from_numpy(a).to(devices.device)
             y = self.model(x)[0].detach().cpu().numpy()
 
         probability_dict = {}
@@ -79,7 +78,9 @@ class DeepDanbooru:
 
         res = []
 
-        for tag in tags:
+        filtertags = {x.strip().replace(' ', '_') for x in shared.opts.deepbooru_filter_tags.split(",")}
+
+        for tag in [x for x in tags if x not in filtertags]:
             probability = probability_dict[tag]
             tag_outformat = tag
             if use_spaces:
